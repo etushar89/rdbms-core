@@ -1,0 +1,179 @@
+							 Record Manager
+							     README
+
+Record Manager acts as an interface for record operations on page file through buffer manager.
+Its clean and modular APIs facilitate this. The costly Disk I/O operations are amortized by the use of underlying Buffer Manager.
+
+Highlights/Extras Features:
+---------------------------
+* Performance tested. High Performance (Takes ~20 sec on fourier for 1M record Inserts and Gets.).
+* Indexes on Primary Key
+  - We are maintaining a dense index structure in a separate file for very fast record access based on primary keys.
+  - This also allows us to have primary key constraint checks and sequential scans.
+* Primary Key Constraints
+  - We are using above mentioned dense index structure to check for duplicate inserts.
+* Conditional Updates using scans
+  - Clients can perform conditional updates using a new API called 'updateScan(...)'.
+  - Client needs to pass conditional expression and a function pointer which actually updates the records.
+* NULL Value Support
+  - We are providing support for inserting NULL values.
+  - This is implemented using maintaining a special NULL Map for each record.
+  - Clients need to use a new API named 'isNULLAttr(...)' to check whether a specific attribute is NULL or not in a record.
+* TIDs
+  - We are maintaining TIDs in index structure for very fast record accesses from page files.
+* Tombstones
+  - Records deleted are marked with tombstones. We are maintaining a special bit with records to identify tombstoned records.
+  - Space occupied by tombstoned records is not reclaimed.
+* Custom binary serializer and deserializer for high performance and space saving rather than using provided string based serializers.
+* All memory leaks fixed, which were there in default test cases, without modifying logical flow and intent of the tests.
+* Access validations for internal functions so that they are not accessible from outside of storage manager like default APIs.
+* 64-Bit build.
+* Stress tested with 10M pages on fourier.
+* Additional test cases.
+   - For NULL, Primary Keys, Conditional Updates and other peculiar scenarios.
+* Simple design. Well organized code base.
+
+I. Contents
+-----------
+All source files (.c, .h)
+this README file
+makefile
+
+II. Build and Run
+------------------
+Following executable binary files are generated:
+1.test_assign3	--	main test file for record operations.
+2.test_expr	--	test file for expressions
+
+A. Build
+	$ make clean
+	$ make all
+
+This will clean build the above 3 binaries for record manager.
+
+B. Execute
+	$ ./test_assign3
+	$ ./test_expr
+
+III. Design and Implementation
+------------------------------
+A. Design
+- Each table is represented by a page file.
+
+*Primary keys and Indexing
+- If there is a primary key defined for a given table, then a special index file (filename.idx) will be created which contains entries of the following form :
+	------------------------
+	pk_attribute_value | RID
+	------------------------
+- pk_attribute_value corresponds to the key and RID is the page.slot of the corresponding record(having this key) in the page file for that table.
+- The primary key constraint will be checked during the insertion of new record and updation of an existing record.
+- Currently we support primary key comprising of only single attribute and the data type of attribute should be integer. We do not support primary key built on multiple attributes of datatype other than integer.
+- This design can easily be extended to implement sequential scans.
+- The index file remains alive on the disk until the table exists and get deleted/destroyed when the corresponding table is deleted.
+- The records in the index file are fixed size and index file is accessed using page file apis.
+- Each slot in the index file represents a key value. For instance, column int a is the primary key of the table then slot 0 corresponds to value 0 of a, slot 5 corresponds to value 5 of a, slot 1000 corresponds to value 1000 of a.
+- This design makes it possible to access a particular key in the index file in O(1) time i.e. avoids sequential scan over the index file. 
+- Given a key, we first determine the page where it is present. This is calculated as follows -
+	key / totalTuplesPerPage wherein 
+	totalTuplesPerPage = page_size/IndexRecSize;
+- The page is then read and record present at the (key%(PAGE_SIZE/IndexRecSize))th offset is read. If the record is not empty that means the key already exists in which case we error out as primary key constraint violated. If not then we go ahead and allow the insert or update operation to proceed and key is added in index file.
+
+* Table meta data
+- Page 0 of the page file corresponding to given table is reserved for the table meta data. Actual table data is stored starting from page 1.
+- The meta data is of following format-
+	----------------------------------------------------
+	pageCount | tupleCount | recordSize | physRecordSize
+	
+	slotCapPerPage | lastPageAvailBytes | freeSpacePage
+
+	freeSpaceSlot | tblNameSize | schemaSize | schema 
+
+	tableNameSize | tableName 
+	----------------------------------------------------
+- Meta data is written when a table is created and it is fetched everytime the table is opened.
+
+* Record structure
+- Records in the page file for a corresponding table are fixed size.
+- Record layout-
+	--------------------
+	RID | nullMap | data
+	--------------------
+- RID is the page and slot where the record lies in the page file.
+- nullMap is a short int whose 0-14 bits act as bitmap for attributes and the 15th bit is used to represent tombstone. if the 15th bit is set then the record was previously deleted.
+- Each ith bit starting 0-14 indicate whether the ith attribute of the table is null or not.
+
+B. Implementation
+
+* createTable
+	Creates table file on disk. Schema is written to metadata page (index 0). If there is a primary key defined for this table the it also 		creates an index file for storing keys and rids of the record.
+
+* openTable
+	Opens a table created by createTable API. Fetches the metadata from page 0, deserializes it and adds it to the table data structure.
+	It also initializes a buffer pool for this table.
+
+* closeTable
+	Closes opened table. Also shuts down the corresponding buffer pool for the table being closed.
+
+* deleteTable
+	Deletes the table data file from disk.
+
+* createSchema
+ 	Creates and returns the schema handle for client's use. Accepts the table skeleton along with the primary key details and returns a
+	schema strcuture populated with given details.
+
+* createIndex
+	Creates an index file for a give table. Each record in this index file is of fixed size.
+
+* closeIndex
+	Closes a specified index file.
+
+* deleteIndex
+	Deleted the index file from disk.
+
+* checkIfPKExists
+	Enforces the primary key constraint. Checks if a key to be inserted or new key being used for updation already exists. Determines the 
+	page in the index file where the key is stored and reads that page into memory and then moves to the appropriate offset and checks the
+	key at that offset. Returns true if key already exists otherwise returns false.
+
+* addPrimaryKey
+	Adds an entry for given key-value pair in the index file. Determines the page in the index file where the key needs to be stored. If
+	the page does not exist then it creates the corresponding page. Key-value pair is then written at the appropriate offset in the page.
+
+* insertRecord
+	Inserts new record into the table. If there is a primary key defined for the table, then uses checkIfPKExists() to enforce primary key
+	constraint. If constraint is followed then the record is inserted and corresponding key-rid pair is added in index file using
+	addPrimaryKey().
+
+* deleteRecord
+	Deletes a record from table
+
+* updateRecord
+	Writes updated record to table. If there is a primary key defined for the table, then uses checkIfPKExists() to check if the new key
+	violates primary key constraint.
+
+* getRecord
+	Reads a record from table
+
+* startScan
+	Scans through the page file to fetch the desired records. If there is a scan condition specified, then only records satisfying the
+	condition are added to the result set. If there is no scan condition, then all the records are added to the result set. Result set 
+	is stored in the scan handle which is later iterated over using next(). 
+
+* next
+	Iterates over the result set of the scan. Returns current record and moves on to the next record in the result set.
+
+* closeScan
+	Closes the scan by destroying the result set and the scan handle. There should be a closeScan() corrresponsing to each startScan().
+
+* updateScan
+	Updates the records satisfying the given scan condition. Accepts the scan condition and pointer to user defined function wherein
+	customized updation of values can be done based on the need. Firt fetches the records satisfying given scan condition, iterates over
+	them and calls the user defined update for each of them to get new value. Then calls updateRecord() to update the record with new
+	values.
+
+- Added new test routines for testing the primary key consraints during inserts and updates-
+	testInsertPK()
+	testUpdatePK()
+- As these routines have been added, the primary key is turned off from the normal test routines i.e. primary key is not set in testSchema(). Added a new testSchemaPK() to create a schema with primary key.
+- Added new test macro TEST_NEG_CHECK for negative testing. This macro is used only for primary key testing and this are used in testInsertPK()
+and testUpdatePK()

@@ -1,0 +1,139 @@
+							 Buffer Manager
+							     README
+
+Buffer Manager acts as a main memory based cache between database files (managed by Storage Manager) and ts clients.
+Its memory centered design tries to amortize the costly disk I/O operations. Buffer Manager can only hold specific number of file blocks in page frames it's allowed to have.
+
+Highlights/Extras:
+------------------
+* Very High Performance (Takes ~13 sec on fourier for 1M pages' Read + Dirty + Write ops with only 3 page frames).
+   - We are avoiding many costly random / unnecessary disk I/O ops.
+* 'Short Circuited Writes' in case new blocks are requested.
+   - If a client requests pages not already present as blocks in underlying pagefile, we have to add new block to disk before that page is swapped out from pool.
+     In normal case, Storage Manager writes NULLs to new block and then actual dirty data is written, causing 2 trips to disk.
+     We have optimized buffer manager to directly initialize new block with actual dirty data, saving 1 disk trip.
+     Tests have shown about 35% reduction in Disk I/O after this feature was enabled and clients requested mostly absent disk blocks. 
+* 'Least Frequently Used' (LFU) replacement algorithm in addition to LRU and FIFO.
+   - This replacement algorithm selects least frequently used pages (with fix count 0) from pool for replacement. If there is tie, oldest of the page is selected.
+   - For LRU and FIFO implementation, we have used timestamps with nano-second resolution to precisely identify time at which page was moved in or used.
+* Thread Safe, with optimizations to reduce lock overheads.
+   - We have maintained 2 types of locks, GLOBAl and PAGE_FRAME specific lock.
+     APIs try to acquire one/both of these locks, thus avoiding keeping clients on wait who just need to read PAGEs from PAGE frame.
+     APIs which most of the internal data structures acquire GLOBAL lock.
+   - This approach reduces waiting time compared to that caused by lock approach.
+* Additional stats: page hits and hit ratio.
+   - We are using Page Hits counter and Page Hit Ratio to check the performance of Buffer Manager.
+   - This info can be accessed with getPageHitCount(..) and getPageHitRatio(..) APIs.
+* Access validations for internal functions so that they are not accessible from outside of storage manager like default APIs.
+* 64-Bit build.
+* Stress tested with 10M pages on fourier.
+* Additional test cases.
+   - for LFU and other peculiar scenarios.
+* Simple design. Well organized code base.
+
+I. Contents
+-----------
+All source files (.c, .h)
+this README file
+makefile
+
+II. Build and Run
+------------------
+A. Build
+	$ make clean
+	$ make all
+
+This will clean build the storage manager and create an executable named assign2
+
+B. Execute
+	$ ./assign2
+
+III. Design and Implementation
+------------------------------
+A. Data Structures
+
+* BM_BufferPool
+	Contains information about a buffer pool which typically specifies the page file associated with the buffer pool, maximum number of pages of the corresponding page file that the buffer pool can hold, the page replacement strategy used by buffer manager for this page file and bookkeeping data.
+
+* BM_PageHandle
+	Contains information about a page. Stores position of the page in the file (page num) and pointer to memory area holding contents of the page.
+
+* BM_Data
+	Contains important management information about a buffer pool such as : total number of dirty pages, total number of pinned pages, 
+	page block request counts. Also maintains statistical information about Disk IO (number of reads and number of writes).
+
+B. Methods
+
+* initBufferPool
+	Initializes buffer pool. Creates and initializes the buffer pool. Sets the necessary metadat. Returns following error codes if sanity 
+	checks fails -
+	RC_INVALID_HANDLE
+	RC_INVALID_PAGE_FILE_NAME
+	RC_INVALID_PAGE_NUM
+
+* shutdownBufferPool
+	Forces writes any dirty pages to disk and if all pages have fix count of 0. AT the end of this operations, all the buffer manager 
+	resources are released.	Unsuccessful attempt returns following error codes -
+	RC_INVALID_HANDLE
+	RC_SHUTDOWN_FAIL
+
+* forceFlushPool
+	Writes all dirty pages from buffer pool with fix count of 0 to disk. Once the dirty pages are flushed off to the disk, the dirty flags
+	are reset. Returns following error codes -
+	RC_INVALID_HANDLE
+	
+* markDirty
+	Marks the specified page in the buffer pool as modified or dirty and also increments the dirty page count. Returns RC_OK on sucess, else
+	following error codes are returned -
+	RC_INVALID_HANDLE
+	RC_PAGE_NOT_PINNED
+
+* unpinPage
+	Unpins and markes the page for swap out. As the buffer manager uses lazy page swap out strategy, unpinned pages are swapped out only
+	when pool gets full. This approach significantly reduces the number of disk reads made. Returns RC_OK on success, else following error
+	codes are returned
+	RC_INVALID_HANDLE
+	RC_PAGE_NOT_EXIST
+
+* forcePage
+	Force writes the specified page to disk irrespective of whether its dirty or not. Returns RC_OK on success, else following error
+        codes are returned
+	RC_INVALID_HANDLE
+	RC_PAGE_NOT_EXIST
+	
+* pinPage
+	Pins page to an empty page frame if it doesn't already exist in any of the frames, otherwise data from already pinned page is returned.
+	Returns RC_OK on success, else following error codes are returned
+	RC_INVALID_HANDLE
+	RC_INVALID_PAGE_REQUESTED
+	RC_ALL_FRAMES_OCCUPIED
+	
+* getFrameContents
+	Returns an array of PageNumbers (of size numPages) where the ith element is the number of the page stored in the ith page frame.
+
+* getDirtyFlags
+	Returns an array of bools (of size numPages) where the ith element is TRUE if the page stored in the ith page frame is dirty. Empty 
+	page frames are considered as clean.
+
+* getFixCounts
+	Returns an array of ints (of size numPages) where the ith element is the fix count of the page stored in the ith page frame. Returns 0 
+	for empty page frames.
+
+* getNumReadIO
+	Returns the number of pages that have been read from disk since a buffer pool has been initialized. Returns following error codes upon
+	unsuccessful operation.
+	RC_INVALID_HANDLE
+
+* getNumWriteIO
+	Returns the number of pages that have been written to disk since a buffer pool has been initialized. Returns following error codes upon
+        unsuccessful operation.
+        RC_INVALID_HANDLE
+	
+* printIOStat
+	Displays the total number of disk reads and writes made.
+
+* writeNewBlocks
+	Ensure that non-existing pages pinned get their corresponding blocks written to pagefile before actual page. 
+
+* printDebugInfo 
+	Displays the contents of page frame index map.

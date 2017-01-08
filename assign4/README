@@ -1,0 +1,80 @@
+						   B+ Tree Based Index Manager
+							     README
+
+Indexing allows fast record lookups based on a pre-specified attribute, usually the Primary Key. In this assignment, index will be backed
+by B+ Trees.
+
+Highlights/Extras Features:
+---------------------------
+* Access validations for internal functions so that they are not accessible from outside of index manager like default APIs.
+* 64-Bit build.
+* Stress tested with 10M pages on fourier.
+* Simple design. Well organized code base.
+
+I. Contents
+-----------
+All source files (.c, .h)
+this README file
+makefile
+
+II. Build and Run
+------------------
+Following executable binary files are generated:
+1.test_assign4	--	main test file for index operations.
+2.test_expr	--	test file for expressions
+
+A. Build
+	$ make clean
+	$ make all
+
+This will clean build the above 3 binaries for record manager.
+
+B. Execute
+	$ ./test_assign4
+IMP: There is one mamory related issue that arises only on fourier's architecture which we could not resolve. Program works fine when executed with valgrind.
+     So, please execute test_assign4 with valgrind.
+	$ ./test_expr
+
+III. Design and Implementation
+------------------------------
+A. Design
+- One global metadata file is maintained which store following information:
+  Total Number of Nodes in Tree
+  Key Data Type
+  N
+  Minimum number of keys required by leaf and non-leaf nodes
+  Pointer to root node
+- Each Node of the Tree is Represented by a Page File. This page also contains that node specific metadata, such as
+  Parent Node
+  Number of keys in that node
+  Leaf or non leaf flag
+  Next Sibling Pointer (in case of leaf nodes)
+
+B. Implementation
+
+* openTreeScan
+	Creates and opens a scan handle that can be used to scan through the tree entries.
+
+* insertKey
+	Inserts a key and it's value (which is RID) to leaf node. Creates additional nodes if required.
+
+* closeTreeScan
+	Closes tree scan handle.
+
+* deleteKey
+	Deletes key and it's corresponding RID from the tree.
+
+* nextEntry
+ 	Returns the next key from the Tree using scna handle created.
+
+* findKey
+	Find the key and it's value (RID) in the tree.
+
+* createBtree
+	Creates the B+ Tree for index.
+
+* closeBtree
+	Closes the handles open and pointing to tree and releases resources.
+
+* openBtree
+	Opens the B+ Tree and returns its handle.
